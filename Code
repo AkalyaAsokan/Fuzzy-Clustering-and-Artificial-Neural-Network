@@ -1,0 +1,736 @@
+
+library(mlbench) ## For Datasets - Glass, BreastCancer
+library(kohonen)  ## For Datasets - wines
+
+dataset<-list()
+data("iris")
+data("Glass")
+data("wines")
+data("BreastCancer")
+dataset[[1]]<-data.matrix(iris)
+dataset[[2]]<-data.matrix(Glass)
+dataset[[3]]<-data.matrix(cbind(wines,wines[vintages]))
+dataset[[4]]<-data.matrix(BreastCancer[,2:ncol(BreastCancer)])
+dataset[[4]][is.na(dataset[[4]])]<-0
+dataset[[5]]<-data.matrix(cmc)
+
+output<-list() 
+
+library(philentropy)  ## For Euclidean Distance
+library(cluster)  ## For Cluster Plot
+library(dbscan) ## For hullplot
+
+############################# EXPLORATORY DATA ANALYSIS AND PRE-PROCESSING ############################
+
+## Installing and loading libraries required for EDA 
+load.libraries <- c('data.table', 'testthat', 'gridExtra', 'corrplot', 'GGally', 'ggplot2', 'e1071', 'dplyr')
+install.lib <- load.libraries[!load.libraries %in% installed.packages()]
+for(libs in install.lib) install.packages(libs, dependences = TRUE)
+sapply(load.libraries, require, character = TRUE)
+library(dtplyr)
+library(profvis)
+library(DataExplorer)
+
+EDA_PreProcessing<-sapply(dataset,function(curr_dataset){
+  
+  ## Importing and Viewing
+  View(curr_dataset)
+  print(curr_dataset)
+  
+  ## Check the class 
+  cat("Class: ",class(curr_dataset),"\n\n")
+  
+  ## Check the number of rows and columns
+  cat("Dimension: ",dim(curr_dataset),"\n\n")
+  
+  ## Structure of the data
+  cat("Structure: ")
+  str(curr_dataset)
+  cat("\n")
+  numeric_var <- names(curr_dataset)[which(sapply(curr_dataset, is.numeric))]
+  
+  ## View summary statistics
+  cat("Summary: ",summary(curr_dataset),"\n\n")
+  
+  ## Identifying missing values
+  head(curr_dataset)
+  cat("The number of missing values",colSums(sapply(as.data.frame(curr_dataset), is.na)),"\n\n")
+  
+  ## The percentage of data missing.
+  cat("The percentage of data missing is",sum(is.na(curr_dataset)) / (nrow(curr_dataset) *ncol(curr_dataset)),"\n\n")
+  
+  # Check for duplicated rows.
+  cat("The number of duplicated rows are", nrow(curr_dataset) - nrow(unique(curr_dataset)),"\n\n")
+  
+  data<-as.data.frame(curr_dataset)
+  
+  ## Explore correlation
+  df<-data
+  colnames(df)<-c()
+  setDF(df)
+  df[is.na(df)] <- 0
+  corrplot(cor(df), method="pie", type="upper",is.corr=FALSE)
+  pause(0.5)
+
+  ## plotting histogram 
+  plot_histogram(curr_dataset)
+  pause(2.5)
+  
+  ## plotting density
+  plot_density(curr_dataset)
+  pause(2.5)
+
+  ## DATA CLEANING
+  ## Missing data [Conversion of NA to 0]
+  curr_dataset[is.na(curr_dataset)] <- 0
+  
+  ## DATA TRANSFORMATION
+  ## Min Max Normalization
+  normalise<-function(X){
+    return((X-min(X))/(max(X)-min(X)))
+  }
+
+  for(i in 1:ncol(curr_dataset)){
+    if(is.numeric(curr_dataset[,i]))
+      curr_dataset[,i]<-normalise(curr_dataset[,i])
+  }
+  print(curr_dataset)
+})
+
+######################################## POST-PROCESSING ##############################################
+
+library(clv)
+library(cluster)
+
+Dunn_DBIndex<-sapply(dataset,function(curr_dataset){
+  curr_dataset=matrix(as.numeric(unlist(curr_dataset[,-ncol(curr_dataset)])),
+                      nrow=nrow(curr_dataset[,-ncol(curr_dataset)]))
+  
+  ## cluster data
+  predictedClusters<-function(k){
+    agnes.mod <- agnes(curr_dataset) # create cluster tree 
+    v.pred <- as.integer(cutree(agnes.mod,k)) # "cut" the tree 
+    
+    intraclust = "centroid"
+    interclust = "centroid"
+    
+    cls.scatt <- cls.scatt.data(curr_dataset, v.pred, dist="manhattan")
+    return(v.pred)
+  }
+  
+  ## define new Dunn and Davies.Bouldin functions
+  Dunn <- function(data,clust) 
+    clv.Dunn( cls.scatt.data(curr_dataset,clust),
+              intracls = "centroid", 
+              intercls = "centroid"
+    )
+  Davies.Bouldin <- function(data,clust) 
+    clv.Davies.Bouldin( cls.scatt.data(curr_dataset,clust),
+                        intracls = "centroid",
+                        intercls ="centroid"
+    )
+  
+  ## compute indicies
+  dunnIndex<-function(k){
+    v.pred<-predictedClusters(k)
+    dunn <- Dunn(curr_dataset, v.pred)
+    return(dunn)
+  }
+  dbIndex<-function(k){
+    v.pred<-predictedClusters(k)
+    davies <- Davies.Bouldin(curr_dataset, v.pred)
+    return(davies)
+  }
+  
+  ## check with cluster size 2 to 10 
+  dunn<-vector()
+  for(i in 2:10){
+    d1<-dunnIndex(i)
+    dunn<-append(dunn,d1)
+  }
+  db<-vector()
+  for(i in 2:10){
+    d1<-dbIndex(i)
+    db<-append(db,d1)
+  }
+  
+  ## plot Dunn and DB Index
+  par(mfrow=c(1,2))
+  plot(c(2:10),dunn,xlab="No.of Clusters",ylab="DunnIndex",type="o")
+  plot(c(2:10),db,xlab="No.of Clusters",ylab="DBIndex",type="o")
+  pause(0.5)
+})
+
+#################################### FUZZY C-MEANS ALGORITHM ########################################
+
+par(mfrow=c(2,2))
+
+FCM_fitness<-sapply(dataset,function(curr_dataset){
+  
+  ## Normalize (Min-Max)
+  for(i in 1:ncol(curr_dataset)-1){
+    curr_dataset[,i]<-(curr_dataset[,i]-min(curr_dataset[,i]))/
+      (range(curr_dataset[,i])[2]-range(curr_dataset[,i])[1])
+  }
+  
+  ## Initialization
+  it=1
+  eps=0.01
+  m=2
+  no_of_clusters=length(unique(curr_dataset[,ncol(curr_dataset)]))
+  no_of_dimensions=ncol(curr_dataset)-1
+  no_of_datapoints=nrow(curr_dataset)
+  
+  best_fitness=0
+  particle_fitness<-c()
+  datapoints<-c()
+  datapoints=curr_dataset[,-ncol(curr_dataset)]
+  
+  ## Step 1 - Initializing membership function values
+  membership_val<-c()
+  for(i in 1:no_of_clusters){
+    membership_val<-cbind(membership_val,runif(no_of_datapoints))
+  }
+  for(i in 1:nrow(membership_val)){
+    membership_val[i,]=membership_val[i,]/sum(membership_val[i,])
+  }
+  membership_val
+  centroid<-c()
+  
+  repeat{
+    
+    ## Step 2 - Computing cluster centers
+    prev_centroid=centroid
+    centroid<-c()
+    for(i in 1:no_of_clusters){
+      temp<-c()
+      for(j in 1:no_of_dimensions){
+        temp<-c(temp,sum((membership_val[,i]^m)*datapoints[,j])/sum(membership_val[,i]^m))
+      }
+      centroid<-rbind(centroid,temp)
+    }
+    rownames(centroid)<-c()
+    print(centroid)
+    
+    ## Step 3 - Computing Euclidean distance
+    dissimilarity<-c()
+    distance<-c()
+    for(i in 1:no_of_clusters){
+      temp<-c()
+      for(j in 1:no_of_datapoints){
+        temp<-rbind(temp,distance(rbind(centroid[i,],datapoints[j,]),method="euclidean"))
+      }
+      dissimilarity<-cbind(dissimilarity,temp)
+    }
+    colnames(dissimilarity)<-c()
+    distance<-dissimilarity
+    
+    ## Step 4 - Update the membership function
+    for(i in 1:nrow(dissimilarity)){
+      dissimilarity[i,]=((1/dissimilarity[i,])^(1/(m-1))/sum(1/dissimilarity[i,])^(1/(m-1)))
+    }
+    
+    ## Calculating fitness value (for post analysis)
+    for(index in 1:no_of_particles){
+      particle_fit=0
+      for(i in 1:no_of_clusters){
+        particle_fit=particle_fit+(distance[index,i]*(dissimilarity[index,i]^m))
+      }
+      particle_fitness[index]<-1/particle_fit
+    }
+    if(max(particle_fitness)>best_fitness){
+      best_fitness<-max(particle_fitness)
+    }
+    
+    ## Print the outcomes of the iteration
+    cat('Iteration',it,'\n')
+    cat('Printing datapoints, old and new membership values\n')
+    print(cbind(datapoints,membership_val,dissimilarity))
+    
+    ## Plot the outcomes of the iteration
+    k<-c()
+    for(i in 1:no_of_datapoints){
+      k<-c(k,which(dissimilarity[i,]==max(dissimilarity[i,])))
+    }
+    clusplot(datapoints, k, 
+             color=TRUE, shade=TRUE, lines=0)
+    
+    membership_val=dissimilarity
+    
+    ## Exit condition
+    it=it+1
+    if(it>=3){
+      flag=0
+      for(i in 1:no_of_clusters){
+        if(distance(rbind(centroid[i,],prev_centroid[i,]),method="euclidean")<eps){
+          flag=flag+1
+        }
+      }
+      if(flag==no_of_clusters){
+        break
+      }
+    }
+  }
+  curr_output<-c()
+  curr_output<-best_fitness
+})
+
+output[[1]]<-FCM_fitness
+
+############################## FUZZY PSO ALGORITHM FOR FUZZY CLUSTERING #############################
+
+FCM_fitness<-sapply(dataset,function(curr_dataset){
+  
+  ## Normalize (Min-Max)
+  for(i in 1:ncol(curr_dataset)-1){
+    curr_dataset[,i]<-(curr_dataset[,i]-min(curr_dataset[,i]))/
+      (range(curr_dataset[,i])[2]-range(curr_dataset[,i])[1])
+  }
+  
+  ## Step 1 - Initializing the parameters
+  no_of_particles<-nrow(curr_dataset)
+  no_of_dims<-ncol(curr_dataset)-1
+  w<-0.7
+  c1<-2
+  c2<-2
+  no_of_clusters<-length(unique(curr_dataset[,ncol(curr_dataset)]))
+  datapoints<-c()
+  datapoints=curr_dataset[,-ncol(curr_dataset)]
+  m=2
+  
+  ## Step 2 - Creating position matrix
+  particles<-list()
+  for(i in 1:no_of_particles){
+    particles[[i]]=runif(no_of_clusters)
+    particles[[i]]<-particles[[i]]/sum(particles[[i]])
+  }
+  
+  ## Step 2 - Creating velocity matrix
+  velocity<-list()
+  for(index in 1:no_of_particles){
+    random_velocity<-runif(1,min = -1,max = 1)
+    velocity[[index]]<-rep(random_velocity,no_of_clusters)
+  }
+  
+  particle_best<-list()
+  particle_best_fitness<-c()
+  particle_best<-particles
+  particles_Sum<-c()
+  
+  ## Fitness function
+  fitness<-function(d,c,p){
+    dist<-c()
+    for(i in 1:no_of_clusters){
+      dist<-rbind(dist,distance(rbind(d,c[i,]),method="euclidean"))
+    }
+    colnames(dist)<-c()
+    particle_fitness=0
+    for(i in 1:no_of_clusters){
+      particle_fitness=particle_fitness+(dist[i,]*(p[i]^m))
+    }
+    return(1/particle_fitness)
+  }
+  
+  flag=0
+  prev_gbest<-0
+  gbest_all<-c()
+  iteration=1
+  
+  repeat{  
+    
+    ## Step 4 - Calculate cluster centers for each particle
+    membership_val<-c()
+    for(i in 1:length(particles)){
+      membership_val=rbind(membership_val,particles[[i]])
+    }
+    
+    ## Computing cluster centroids
+    centroid<-c()
+    for(i in 1:no_of_clusters){
+      temp<-c()
+      for(j in 1:no_of_dims){
+        temp<-c(temp,sum((membership_val[,i]^m)*datapoints[,j])/sum(membership_val[,i]^m))
+      }
+      centroid<-rbind(centroid,temp)
+    }
+    rownames(centroid)<-c()
+    
+    k<-c()
+    for(i in 1:no_of_particles){
+      k<-c(k,which(particles[[i]]==max(particles[[i]])))
+    }
+    clusplot(datapoints, k, 
+             color=TRUE, shade=TRUE, lines=0)
+    
+    ## Step 5 - Calculate the fitness value
+    particle_fitness<-c()
+    for(index in 1:no_of_particles){
+      particle_fitness[index]<-fitness(datapoints[index,],centroid,membership_val[index,])
+      
+      ## Step 6 - Calculate pbest for each particle
+      if(iteration == 1){
+        particle_best[[index]]<-particles[[index]]
+        particle_best_fitness[index]<-particle_fitness[index]
+        next
+      }
+      if(particle_fitness[index]>particle_best_fitness[index]){
+        particle_best[[index]]<-particles[[index]]
+        particle_best_fitness[index]<-particle_fitness[index]
+      }
+    }
+    iteration=iteration+1
+    
+    ## Step 7 - Calculate gbest for the swarm
+    gbest_position<-which.max(particle_best_fitness)
+    
+    ## Exit condition
+    if(prev_gbest==max(particle_best_fitness)){
+      flag=flag+1
+    }
+    else{
+      flag=0
+    }
+    if(flag==1000){ 
+      break
+    }
+    prev_gbest<-max(particle_best_fitness)
+    gbest_all<-c(gbest_all,prev_gbest)
+    
+    ## Step 8, 9 - Update velocity and position matrix
+    for(index in 1:no_of_particles){
+      r1<-runif(1)
+      r2<-runif(1)
+      velocity[[index]]<-velocity[[index]]*w+c1*r1*(particle_best[[index]]-particles[[index]])+
+        c2*r2*(particle_best[[gbest_position]]-particles[[index]])
+      particles[[index]]<-particles[[index]]+velocity[[index]]
+      
+      ## Normalizing
+      ## All negative values to 0
+      particles[[index]][particles[[index]]<0]=0
+      ## If all elements are 0, re-evaluated using series of random numbers
+      if(particles[[index]][1]==0&&length(unique(particles[[index]]))==1){
+        particles[[index]]=runif(no_of_clusters)
+      }
+      ## Normalizing such that sum of membership values in a row is equal to 1
+      particles[[index]]<-particles[[index]]/sum(particles[[index]])
+    }
+    
+    ## Print the outcomes of the iteration
+    cat('Iteration',iteration,'\n')
+    cat('Printing velocity, position and particle best position\n')
+    max_length_velocity <- max(unlist(lapply (velocity, FUN = length)))
+    velocity_matrix <- sapply (velocity
+                               , function (x) {length (x) <- max_length_velocity; return (x)})
+    max_length_particles <- max(unlist(lapply (particles, FUN = length)))
+    particle_matrix <- sapply (particles
+                               , function (x) {length (x) <- max_length_particles; return (x)})
+    max_length_pbest <- max(unlist(lapply (particle_best, FUN = length)))
+    pbest_matrix <- sapply (particle_best
+                            , function (x) {length (x) <- max_length_pbest; return (x)})
+    
+    print(cbind(t(velocity_matrix),t(particle_matrix),t(pbest_matrix)))
+    cat('Global Best Fitness: ',prev_gbest,'\n')
+    
+  }
+  curr_output<-c()
+  curr_output<-max(gbest_all)
+})
+
+output[[2]]<-FCM_fitness
+
+################################ HYBRID FCM-PSO FOR FUZZY CLUSTERING ################################
+
+FCM_fitness<-sapply(dataset,function(curr_dataset){
+  
+  ## Normalize (Min-Max)
+  for(i in 1:ncol(curr_dataset)-1){
+    curr_dataset[,i]<-(curr_dataset[,i]-min(curr_dataset[,i]))/
+      (range(curr_dataset[,i])[2]-range(curr_dataset[,i])[1])
+  }
+  
+  ## Step 1 - Initializing the parametes
+  no_of_particles<-nrow(curr_dataset)
+  no_of_dims<-ncol(curr_dataset)-1
+  w<-0.7
+  c1<-2
+  c2<-2
+  no_of_clusters<-length(unique(curr_dataset[,ncol(curr_dataset)]))
+  datapoints<-c()
+  datapoints=curr_dataset[,-ncol(curr_dataset)]
+  m=2
+  
+  ## Step 2 - Creating position matrix
+  particles<-list()
+  for(i in 1:no_of_particles){
+    particles[[i]]=runif(no_of_clusters)
+    particles[[i]]<-particles[[i]]/sum(particles[[i]])
+  }
+  
+  ## Step 2 - Creating velocity matrix
+  velocity<-list()
+  for(index in 1:no_of_particles){
+    random_velocity<-runif(1,min = -1,max = 1)
+    velocity[[index]]<-rep(random_velocity,no_of_clusters)
+  }
+  
+  particle_best<-list()
+  particle_best_fitness<-c()
+  particle_best<-particles
+  particles_Sum<-c()
+  
+  ## Fitness function
+  fitness<-function(d,c,p){
+    dist<-c()
+    for(i in 1:no_of_clusters){
+      dist<-rbind(dist,distance(rbind(d,c[i,]),method="euclidean"))
+    }
+    colnames(dist)<-c()
+    particle_fitness=0
+    for(i in 1:no_of_clusters){
+      particle_fitness=particle_fitness+(dist[i,]*(p[i]^m))
+    }
+    return(1/particle_fitness)
+  }
+  
+  flag1=0
+  flag2=0
+  prev_gbest<-0
+  gbest_all<-c()
+  
+  repeat{
+    for(iteration in 1:1000){ 
+      flag1=0
+      ## Step 4.1 - Calculate cluster centers for each particle
+      membership_val<-c()
+      for(i in 1:length(particles)){
+        membership_val=rbind(membership_val,particles[[i]])
+      }
+      
+      ## Computing cluster centroids
+      centroid<-c()
+      for(i in 1:no_of_clusters){
+        temp<-c()
+        for(j in 1:no_of_dims){
+          temp<-c(temp,sum((membership_val[,i]^m)*datapoints[,j])/sum(membership_val[,i]^m))
+        }
+        centroid<-rbind(centroid,temp)
+      }
+      rownames(centroid)<-c()
+      
+      k<-c()
+      for(i in 1:no_of_particles){
+        k<-c(k,which(particles[[i]]==max(particles[[i]])))
+      }
+      clusplot(datapoints, k, color=TRUE, shade=TRUE, lines=0)
+      
+      ## Step 4.2 - Calculate the fitness value
+      particle_fitness<-c()
+      for(index in 1:no_of_particles){
+        particle_fitness[index]<-fitness(datapoints[index,],centroid,particles[[index]])
+        
+        ## Step 4.3 - Calculate pbest for each particle
+        if(iteration == 1){
+          particle_best[[index]]<-particles[[index]]
+          particle_best_fitness[index]<-particle_fitness[index]
+          next
+        }
+        if(particle_fitness[index]>particle_best_fitness[index]){
+          particle_best[[index]]<-particles[[index]]
+          particle_best_fitness[index]<-particle_fitness[index]
+        }
+      }
+      
+      ## Step 4.4 - Calculate gbest for the swarm
+      gbest_position<-which.max(particle_best_fitness)
+      
+      ## FPSO exit condition
+      if(prev_gbest==max(particle_best_fitness)){
+        flag1=flag1+1
+      }
+      else{
+        flag1=0
+      }
+      if(flag1==200){
+        break
+      }
+      prev_gbest<-max(particle_best_fitness)
+      gbest_all<-c(gbest_all,prev_gbest)
+      
+      ## Step 4.5, 4.6 - Update velocity and position matrix
+      for(index in 1:no_of_particles){
+        r1<-runif(1)
+        r2<-runif(1)
+        velocity[[index]]<-velocity[[index]]*w+c1*r1*(particle_best[[index]]-particles[[index]])+
+          c2*r2*(particle_best[[gbest_position]]-particles[[index]])
+        particles[[index]]<-particles[[index]]+velocity[[index]]
+        
+        ## Normalizing
+        ## All negative values to 0
+        particles[[index]][particles[[index]]<0]=0
+        ## If all elements are 0, re-evaluated using series of random numbers
+        if(particles[[index]][1]==0&&length(unique(particles[[index]]))==1){
+          particles[[index]]=runif(no_of_clusters)
+        }
+        ## Normalizing such that sum of membership values in a row is equal to 1
+        particles[[index]]<-particles[[index]]/sum(particles[[index]])
+      }
+      
+      ## Print the outcomes of the iteration
+      cat('Iteration',iteration,'\n')
+      cat('Printing velocity, position and particle best position\n')
+      max_length_velocity <- max(unlist(lapply (velocity, FUN = length)))
+      velocity_matrix <- sapply (velocity
+                                 , function (x) {length (x) <- max_length_velocity; return (x)})
+      max_length_particles <- max(unlist(lapply (particles, FUN = length)))
+      particle_matrix <- sapply (particles
+                                 , function (x) {length (x) <- max_length_particles; return (x)})
+      max_length_pbest <- max(unlist(lapply (particle_best, FUN = length)))
+      pbest_matrix <- sapply (particle_best
+                              , function (x) {length (x) <- max_length_pbest; return (x)})
+      
+      print(cbind(t(velocity_matrix),t(particle_matrix),t(pbest_matrix)))
+      cat('Global Best Fitness: ',prev_gbest,'\n')
+      
+    }
+    
+    prev_centroid<-c()
+    no_of_iterations=5
+    for(iteration in 1:no_of_iterations){
+      
+      ## Step 5.1 - Computing cluster centers
+      membership_val<-c()
+      for(i in 1:length(particles)){
+        membership_val=rbind(membership_val,particles[[i]])
+      }
+      
+      prev_centroid=centroid
+      centroid<-c()
+      for(i in 1:no_of_clusters){
+        temp<-c()
+        for(j in 1:no_of_dims){
+          temp<-c(temp,sum((membership_val[,i]^m)*datapoints[,j])/sum(membership_val[,i]^m))
+        }
+        centroid<-rbind(centroid,temp)
+      }
+      rownames(centroid)<-c()
+      centroid
+      
+      ## Step 5.2 - Computing Euclidean distance
+      dissimilarity<-c()
+      for(i in 1:no_of_clusters){
+        temp<-c()
+        for(j in 1:no_of_particles){
+          temp<-rbind(temp,distance(rbind(centroid[i,],datapoints[j,]),method="euclidean"))
+        }
+        dissimilarity<-cbind(dissimilarity,temp)
+      }
+      colnames(dissimilarity)<-c()
+      distance<-dissimilarity
+      
+      ## Step 5.3 - Update the membership function
+      for(i in 1:nrow(dissimilarity)){
+        dissimilarity[i,]=((1/dissimilarity[i,])^(1/(m-1))/sum(1/dissimilarity[i,])^(1/(m-1)))
+      }
+      for(i in 1:length(particles)){
+        particles[[i]]=dissimilarity[i,]
+      }
+      
+      ## Print the outcomes of the iteration
+      cat('Iteration',iteration,'\n')
+      cat('Printing datapoints, old and new membership values\n')
+      print(cbind(datapoints,membership_val,dissimilarity))
+      
+      ## Plot the outcomes of the iteration
+      k<-c()
+      for(i in 1:no_of_particles){
+        k<-c(k,which(dissimilarity[i,]==max(dissimilarity[i,])))
+      }
+      clusplot(datapoints, k, color=TRUE, shade=TRUE, lines=0)
+      
+      particle_fitness<-c()
+      for(index in 1:no_of_particles){
+        particle_fit=0
+        for(i in 1:no_of_clusters){
+          particle_fit=particle_fit+(distance[index,i]*(particles[[index]][i]^m))
+        }
+        particle_fitness[index]<-1/particle_fit
+        
+        ## Step 5.4 - Calculate pbest for each particle
+        if(particle_fitness[index]>particle_best_fitness[index]){
+          particle_best[[index]]<-particles[[index]]
+          particle_best_fitness[index]<-particle_fitness[index]
+        }
+      }
+      
+      ## Step 5.5 - Calculate gbest for the swarm
+      gbest_position<-which.max(particle_best_fitness)
+      prev_gbest<-max(particle_best_fitness)
+      gbest_all<-c(gbest_all,prev_gbest)
+    }
+    
+    ## FCM_FPSO terminating condition
+    if(prev_gbest==max(particle_best_fitness)){
+      flag2=flag2+1
+    }
+    else{
+      flag2=0
+    }
+    if(flag2==2){
+      break
+    }
+  }
+  curr_output<-c()
+  curr_output<-max(gbest_all)
+})
+
+output[[3]]<-FCM_fitness
+
+############################################ RESULTS ################################################
+
+library("ggplot2")
+
+dat <- data.frame(Fitness = c(output[[1]],output[[2]],output[[3]]),
+                  Dataset= rep(c("Iris","Glass","Wine","Breast Cancer","CMC"),3),
+                  Clustering_Method = c(rep("FCM",5),rep("FPSO",5),rep("Hybrid FCM-FPSO",5)))
+
+ggplot(dat, aes(x=Dataset, y = Fitness, group = Clustering_Method,beside=TRUE)) +
+  geom_bar(stat="identity", position="dodge", aes(fill=Clustering_Method)) + 
+  labs(title = "FCM vs FPSO vs Hybrid FCM-FPSO")
+
+##################### SELF ORGANIZING FEATURE MAP - ARTIFICIAL NEURAL NETWORK #######################
+
+## Install Kohonen package
+install.packages("Kohonen")
+library(kohonen)
+
+par(mfrow=c(1,2))
+
+FCM_fitness<-sapply(dataset,function(curr_dataset){
+  
+  ## Remove the class label
+  data_scale<-scale(curr_dataset[,-ncol(curr_dataset)])
+  cat('Scaled Data\n')
+  print(data_scale)
+  
+  ## Data Classification and Mapping
+  grid =somgrid(xdim=10, ydim=10, topo=c("hexagonal"))
+  cat('Grid\n')
+  print(grid)
+  cat('\n')
+  som.data<-som(data_scale, grid)
+  cat('SOM grid\n')
+  print(som.data)
+  cat('\n')
+  plot(som.data)
+  cat('SOM grid points\n')
+  print(som.data$grid$pts)
+  cat('\n')
+  
+  ## Clustering
+  ## Grouping based on the value of the nodes
+  hclust(dist(som.data$codes[[1]]))
+  peta<-cutree(hclust(dist(som.data$codes[[1]])), length(unique(curr_dataset[,ncol(curr_dataset)])))
+  plot(som.data, type="codes", bgcol=rainbow(length(unique(curr_dataset[,ncol(curr_dataset)]))) [peta])
+  add.cluster.boundaries(som.data, peta)
+  
+})
