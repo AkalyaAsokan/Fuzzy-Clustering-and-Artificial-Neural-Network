@@ -34,4 +34,4 @@
 
 ## CITATION
 
-Izakian, H., Abraham, A. and Snášel, V., 2009, December. Fuzzy clustering using hybrid fuzzy c-means and fuzzy particle swarm optimization. In 2009 World Congress on Nature & Biologically Inspired Computing (NaBIC) (pp. 1690-1694). IEEE.
+Izakian, H., Abraham, A. and Snášel, V., _2009, December. Fuzzy clustering using hybrid fuzzy c-means and fuzzy particle swarm optimization. In 2009 World Congress on Nature & Biologically Inspired Computing (NaBIC)_ (pp. 1690-1694). IEEE.
