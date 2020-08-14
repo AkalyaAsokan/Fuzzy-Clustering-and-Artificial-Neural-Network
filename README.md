@@ -1,5 +1,5 @@
 # Fuzzy Clustering Using Hybrid Fuzzy c-means and Fuzzy Particle Swarm Optimization
-(A Research Paper Implementation - Paper attached above)
+(A Research Paper Implementation - Paper attached above; Implemented Self-organization feature map (SOFM) in addition)
 
 ## ABSTRACT
 
